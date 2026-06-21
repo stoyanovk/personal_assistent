@@ -10,8 +10,9 @@ MVP: Telegram-бот на Python, который принимает естест
 - Python + `aiogram` async
 - Postgres + async SQLAlchemy
 - LangChain Python + Pydantic schema
-- APScheduler внутри процесса бота
-- Docker Compose для бота и Postgres
+- Celery worker + Celery Beat
+- Redis как Celery broker
+- Docker Compose для Postgres и Redis
 
 ## Key Design
 
@@ -55,7 +56,7 @@ app/
 - `services.drafts`: хранит per-user context для уточнений.
 - `services.calendar`: создает, читает и удаляет события/напоминания.
 - `services.conflicts`: проверяет пересечения встреч.
-- `services.notifications`: создает notification rows и отправляет due notifications.
+- `services.notifications`: создает notification rows и ставит ближайшие уведомления в Celery queue.
 
 ## Public Interfaces
 
@@ -82,7 +83,7 @@ Pydantic schema mirrors current TS shape:
 DB tables:
 - `users`: `id`, `telegram_user_id`, `language`, `timezone`, timestamps.
 - `calendar_items`: user-owned events/reminders with `start_at`, optional `end_at`, recurrence JSON, title/description.
-- `notifications`: generated notification rows with `notify_at`, `occurrence_start_at`, `kind`, `sent_at`.
+- `notifications`: generated notification rows with `user_id`, `telegram_chat_id`, `event_id`, `send_at`, `status`, `payload`, timestamps.
 
 ## Core Flows
 
@@ -108,9 +109,15 @@ Notifications:
   - 30 minutes before start
   - at start time
 - `reminder`: create 1 notification at the reminder time.
-- APScheduler runs inside bot process.
-- Scheduler job runs every minute, selects unsent due notifications from Postgres, sends Telegram messages, then marks them as sent.
-- No OS cron per event.
+- New notification rows are saved in Postgres with status `pending`.
+- Celery Beat runs a scheduler task every 60 seconds.
+- The scheduler selects `pending` notifications where `send_at <= now() + 15 minutes`.
+- Each selected notification is added to Celery as a delayed task with `eta=send_at`.
+- After successful enqueue, status changes from `pending` to `queued`.
+- Celery worker executes the task at `send_at`, sends `payload` to `telegram_chat_id`, then changes status to `sent`.
+- Telegram send failures are retried by Celery.
+- When retries are exhausted, status changes to `failed`.
+- Cancelled notifications have status `cancelled` and must not be queued or sent.
 
 Recurrence:
 - MVP supports simple recurrence from current schema: daily, weekly, monthly, yearly.
@@ -121,7 +128,7 @@ Recurrence:
 Delete/cancel:
 - MVP deletion is not agent-based.
 - `/week`, `/month`, `/quarter` show inline delete buttons.
-- Delete checks ownership by `user_id`, removes the item, and removes pending notifications.
+- Delete checks ownership by `user_id` and changes related `pending` or `queued` notifications to `cancelled`.
 
 ## Test Plan
 
@@ -131,6 +138,9 @@ Unit tests:
 - Conflict detection catches overlapping intervals and ignores non-overlapping intervals.
 - Default event duration is 1 hour.
 - Notification service creates 2 rows for events and 1 row for reminders.
+- Notification scheduler queues only `pending` rows inside the next 15 minutes.
+- Celery worker changes a successfully delivered notification from `queued` to `sent`.
+- Exhausted Telegram retries change notification status to `failed`.
 - Delete removes only the current user's item.
 
 Integration/manual checks:
@@ -148,3 +158,4 @@ Integration/manual checks:
 - Agent-based deletion and richer natural-language management are v2.
 - User-specific timezone settings are postponed; default is `Europe/Kiev`.
 - In-memory drafts are acceptable for MVP because losing an unfinished clarification after restart is not critical.
+- `notifications.event_id` references `calendar_items.id` for both `event` and `reminder` records.
