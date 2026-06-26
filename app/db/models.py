@@ -11,12 +11,18 @@ Base = declarative_base()
 class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(primary_key=True)
-    telegram_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    telegram_user_id: Mapped[int] = mapped_column(
+        BigInteger, unique=True, index=True
+    )
     timezone: Mapped[str] = mapped_column(nullable=False, default="UTC")
 
-    calendar_items: Mapped[list["CalendarItem"]] = relationship(back_populates="user")
+    calendar_items: Mapped[list["CalendarItem"]] = relationship(
+        back_populates="user"
+    )
 
-    notifications: Mapped[list["Notification"]] = relationship(back_populates="user")
+    notifications: Mapped[list["Notification"]] = relationship(
+        back_populates="user"
+    )
 
 
 class EventType(enum.Enum):
@@ -61,11 +67,12 @@ class Notification(Base):
         Enum(StatusType), nullable=False, default=StatusType.pending
     )
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    send_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    send_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     calendar_item_id: Mapped[int] = mapped_column(
         ForeignKey("calendar_items.id"), index=True
     )
     calendar_item: Mapped["CalendarItem"] = relationship()
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     user: Mapped["User"] = relationship(back_populates="notifications")
-
